@@ -1,0 +1,202 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/atkinson-hyperlegible-next";
+@import "@fontsource-variable/atkinson-hyperlegible-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------------
+   Guff tokens. A pine sidebar and a quiet white page. Teal is for
+   things you can do; marigold (sayapatri) only for things that need
+   your attention: unread, mentions, someone typing.
+   ------------------------------------------------------------------ */
+:root {
+  --radius: 0.5rem;
+
+  --background: #fbfbf9;
+  --foreground: #1b1f1e;
+  --card: #ffffff;
+  --card-foreground: #1b1f1e;
+  --popover: #ffffff;
+  --popover-foreground: #1b1f1e;
+  --primary: #13695c;
+  --primary-foreground: #ffffff;
+  --secondary: #eff2f0;
+  --secondary-foreground: #1b1f1e;
+  --muted: #eff2f0;
+  --muted-foreground: #5b6462;
+  --accent: #ecf2ef;
+  --accent-foreground: #1b1f1e;
+  --destructive: #b42318;
+  --border: #e2e6e4;
+  --input: #d2d8d5;
+  --ring: #13695c;
+
+  --sidebar: #0f2a26;
+  --sidebar-foreground: #d9e5e2;
+  --sidebar-muted: #93aba6;
+  --sidebar-hover: #163a35;
+  --sidebar-active: #1f4c45;
+  --sidebar-border: #1d3d38;
+
+  --marigold: #f2a516;
+  --marigold-foreground: #1b1f1e;
+  --mention-row: #fff6dc;
+  --jump-row: #fdecc0;
+  --online: #2f9e5f;
+  --away: #c98a12;
+
+  /* Avatar colours (white initials pass 4.5:1 on all of them) */
+  --avatar-indigo: #4338ca;
+  --avatar-teal: #0f766e;
+  --avatar-rose: #be123c;
+  --avatar-amber: #b45309;
+  --avatar-sky: #0369a1;
+  --avatar-violet: #7c3aed;
+  --avatar-green: #15803d;
+  --avatar-orange: #c2410c;
+}
+
+.dark {
+  --background: #111615;
+  --foreground: #e3e9e7;
+  --card: #161c1b;
+  --card-foreground: #e3e9e7;
+  --popover: #1a2120;
+  --popover-foreground: #e3e9e7;
+  --primary: #4fb8a5;
+  --primary-foreground: #0b1211;
+  --secondary: #1c2422;
+  --secondary-foreground: #e3e9e7;
+  --muted: #1c2422;
+  --muted-foreground: #9aa8a5;
+  --accent: #1e2826;
+  --accent-foreground: #e3e9e7;
+  --destructive: #f2786f;
+  --border: #252f2d;
+  --input: #33403d;
+  --ring: #4fb8a5;
+
+  --sidebar: #0b100f;
+  --sidebar-foreground: #cfdcd9;
+  --sidebar-muted: #84998f;
+  --sidebar-hover: #14201e;
+  --sidebar-active: #1b2c29;
+  --sidebar-border: #18231f;
+
+  --marigold: #f2b33d;
+  --marigold-foreground: #111615;
+  --mention-row: #2a2414;
+  --jump-row: #3a3015;
+  --online: #4cc480;
+  --away: #e0a83a;
+}
+
+@theme {
+  --font-sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "Atkinson Hyperlegible Mono Variable", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-marigold: var(--marigold);
+  --color-marigold-foreground: var(--marigold-foreground);
+  --color-mention-row: var(--mention-row);
+  --color-jump-row: var(--jump-row);
+  --color-online: var(--online);
+  --color-away: var(--away);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-size: 15px;
+    line-height: 1.5;
+    font-feature-settings: "ss01" 0;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+}
+
+/* Message text: keep runs of spaces and line breaks the way they were typed. */
+.message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message-text code {
+  @apply rounded-[4px] bg-muted px-1 py-px font-mono text-[0.88em];
+}
+.message-text pre {
+  @apply my-1 overflow-x-auto rounded-md border bg-muted px-3 py-2 font-mono text-[13px] leading-relaxed;
+  white-space: pre;
+}
+
+/* Three marigold dots for "someone is typing". */
+@keyframes guff-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+.typing-dots span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin: 0 1px;
+  border-radius: 999px;
+  background: var(--marigold);
+  animation: guff-typing 1.2s infinite ease-in-out;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+/* A message you jumped to from search or a reply quote glows briefly. */
+@keyframes guff-jump {
+  from { background-color: var(--jump-row); }
+  to { background-color: transparent; }
+}
+.jump-flash {
+  animation: guff-jump 2.4s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots span,
+  .jump-flash {
+    animation: none;
+  }
+  .typing-dots span { opacity: 0.8; }
+}
