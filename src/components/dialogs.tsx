@@ -349,7 +349,17 @@ export function ProfileDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     try {
       const user = await api.users.updateMe({ name, title })
       upsertUser(qc, user)
-      updateUser({ id: user.id, name: user.name, email: user.email, title: user.title, color: user.color, lastSeenAt: user.lastSeenAt })
+      updateUser({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        title: user.title,
+        color: user.color,
+        lastSeenAt: user.lastSeenAt,
+        customStatus: user.customStatus,
+        dndUntil: user.dndUntil,
+        emailVerified: user.emailVerified,
+      })
       toast.success("Profile saved")
       onOpenChange(false)
     } catch (err) {

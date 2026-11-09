@@ -57,31 +57,49 @@ export function RealtimeBridge() {
       if (message.authorId === me.id && message.clientId) removePending(message.clientId)
       putMessage(qc, message)
       setTyping(message.channelId, message.authorId, false)
+      if (message.webhook) void qc.invalidateQueries({ queryKey: keys.webhooks(message.channelId) })
 
       const channels = qc.getQueryData<Channel[]>(keys.channels)
       const channel = channels?.find((c) => c.id === message.channelId)
       if (!channel) {
         // A new DM (or a channel someone just added us to): fetch the list again.
         void qc.invalidateQueries({ queryKey: keys.channels })
-      } else {
-        const fromSomeoneElse = message.authorId !== me.id && message.kind === "user"
-        const mentionsMe = message.mentions.includes(me.id)
-        if (fromSomeoneElse && isWatching(message.channelId)) {
-          markRead(qc, message.channelId, message.id)
-        } else if (fromSomeoneElse) {
-          patchChannel(qc, channel.id, (c) => ({
-            ...c,
-            unread: Math.min(c.unread + 1, 100),
-            mentions: c.mentions + (mentionsMe ? 1 : 0),
-          }))
-        }
-        patchChannel(qc, channel.id, (c) => ({ ...c, lastMessageAt: message.kind === "user" ? message.createdAt : c.lastMessageAt }))
+        return
+      }
+      // Integration posts and your own reminders count as news, like messages from others.
+      const news = message.kind === "user" && (message.authorId !== me.id || message.reminder || message.webhook !== null)
+      const mentionsMe = message.mentions.includes(me.id)
+      const inThread = message.threadRootId !== null
+      // Thread replies only count (and notify) when they mention you.
+      const counts = news && (!inThread || mentionsMe)
+      if (counts && !inThread && isWatching(message.channelId)) {
+        markRead(qc, message.channelId, message.id)
+      } else if (counts) {
+        patchChannel(qc, channel.id, (c) => ({
+          ...c,
+          unread: Math.min(c.unread + 1, 100),
+          mentions: c.mentions + (mentionsMe ? 1 : 0),
+        }))
+      }
+      if (message.kind === "user" && !inThread) patchChannel(qc, channel.id, (c) => ({ ...c, lastMessageAt: message.createdAt }))
 
-        if (fromSomeoneElse && (channel.kind === "dm" || mentionsMe)) {
-          const author = qc.getQueryData<User[]>(keys.users)?.find((u) => u.id === message.authorId)
-          const where = channel.kind === "dm" ? author?.name ?? "New message" : `${author?.name ?? "Someone"} in #${channel.name}`
-          notify(where, plain(message.text) || "Sent an attachment", () => navigateRef.current(`/c/${channel.id}`))
-        }
+      const wanted =
+        counts &&
+        channel.notify !== "mute" &&
+        (channel.kind === "dm" || mentionsMe || message.reminder || (channel.notify === "all" && !inThread))
+      const self = qc.getQueryData<User[]>(keys.users)?.find((u) => u.id === me.id)
+      const dnd = !!self?.dndUntil && new Date(self.dndUntil).getTime() > Date.now()
+      if (wanted && !dnd) {
+        const author = qc.getQueryData<User[]>(keys.users)?.find((u) => u.id === message.authorId)
+        const who = message.webhook?.name ?? author?.name
+        const where = message.reminder
+          ? "⏰ Reminder"
+          : channel.kind === "dm"
+            ? who ?? "New message"
+            : `${who ?? "Someone"} in #${channel.name}`
+        const body = message.reminder ? plain(message.ref?.excerpt ?? "") || "A message you wanted to come back to" : plain(message.text) || "Sent an attachment"
+        const path = inThread ? `/c/${channel.id}?thread=${message.threadRootId}` : `/c/${channel.id}`
+        notify(where, body, () => navigateRef.current(path))
       }
     }
 
@@ -111,7 +129,7 @@ export function RealtimeBridge() {
       if (channel.joined) upsertChannel(qc, channel)
       void qc.invalidateQueries({ queryKey: ["browse"] })
     }
-    const onMeta = (meta: { id: string; name: string; topic: string; memberCount: number }) => {
+    const onMeta = (meta: { id: string; name: string; topic: string; memberCount: number; archivedAt: string | null }) => {
       patchChannel(qc, meta.id, (c) => ({ ...c, ...meta }))
       void qc.invalidateQueries({ queryKey: keys.members(meta.id) })
     }
@@ -120,11 +138,14 @@ export function RealtimeBridge() {
       if (viewStore.get().channelId === channelId) navigateRef.current("/", { replace: true })
     }
     const onUser = (user: User) => upsertUser(qc, user)
+    const onBookmark = () => void qc.invalidateQueries({ queryKey: keys.bookmarks })
+    const onScheduled = () => void qc.invalidateQueries({ queryKey: keys.scheduled })
 
     /** After a reconnect: fetch what we missed in every open conversation, then resend the outbox. */
     const catchUp = async () => {
       void qc.invalidateQueries({ queryKey: keys.channels })
       void qc.invalidateQueries({ queryKey: keys.users })
+      void qc.invalidateQueries({ queryKey: ["thread"] })
       const views = qc.getQueriesData<MessagesData>({ queryKey: ["messages"] })
       for (const [key, data] of views) {
         const channelId = key[1] as string
@@ -165,6 +186,8 @@ export function RealtimeBridge() {
     socket.on("channel:meta", onMeta)
     socket.on("channel:removed", onRemoved)
     socket.on("user:upsert", onUser)
+    socket.on("bookmark:changed", onBookmark)
+    socket.on("scheduled:changed", onScheduled)
 
     const unsubscribe = connectionStore.subscribe(() => {
       if (connectionStore.get() === "reconnecting" && everConnected.current) lost.current = true

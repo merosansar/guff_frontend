@@ -1,19 +1,41 @@
 import { memo, useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { Copy, CornerUpLeft, Download, FileText, Pencil, RotateCcw, SmilePlus, Trash2, X } from "lucide-react"
+import {
+  AlarmClock,
+  Bookmark,
+  BookmarkCheck,
+  Bot,
+  Copy,
+  CornerUpLeft,
+  Download,
+  FileText,
+  MessageSquareText,
+  MoreHorizontal,
+  Pencil,
+  Pin,
+  PinOff,
+  RotateCcw,
+  SmilePlus,
+  Trash2,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 import { Avatar } from "@/components/common"
+import { EditHistoryDialog, LinkPreviewCard, ReminderCard, StatusEmoji, WebhookBadge, WhenDialog } from "@/components/extras"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { deleteMessage, editMessage, retryMessage, toggleReaction } from "@/features/actions"
-import { formatBytes, formatFull, formatTime, listNames } from "@/lib/format"
+import { deleteMessage, editMessage, pinMessage, retryMessage, saveMessage, toggleReaction } from "@/features/actions"
+import { api } from "@/lib/api"
+import { formatBytes, formatFull, formatShort, formatTime, listNames } from "@/lib/format"
 import { type MarkupContext, isJumboEmoji, renderMessageText } from "@/lib/markup"
 import { type PendingMessage, removePending } from "@/lib/stores"
 import { type Attachment, type Message, REACTIONS, type User } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { fromWire, toWire } from "./mentions"
+import { VoicePlayer, isVoice } from "./voice"
 
 const QUICK = ["👍", "❤️", "😂"] as const
 
@@ -27,6 +49,12 @@ export interface MessageItemProps {
   mentionsMe: boolean
   seen?: boolean
   editing: boolean
+  /** Owner or admin of the channel: can delete anyone's message. */
+  canManage?: boolean
+  saved?: boolean
+  /** Shown inside the thread panel: no "reply in thread" there. */
+  inThread?: boolean
+  onOpenThread?: (rootId: string) => void
   onStartEdit: () => void
   onStopEdit: () => void
   onReply: () => void
@@ -38,11 +66,21 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
   const qc = useQueryClient()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [remindOpen, setRemindOpen] = useState(false)
 
   if (message.kind === "system") return <SystemLine message={message} author={author} ctx={ctx} />
 
   const deleted = message.deletedAt !== null
-  const name = author?.name ?? "Someone"
+  const bot = message.webhook
+  const name = bot?.name ?? author?.name ?? "Someone"
+  const ownText = mine && !bot
+  const canDelete = ownText || (!!props.canManage && !mine) || (!!props.canManage && !!bot)
+  const voice = message.attachments.filter(isVoice)
+  const files = message.attachments.filter((a) => !isVoice(a))
+  const pinner = message.pinnedBy ? (message.pinnedBy === ctx.meId ? "you" : ctx.users.get(message.pinnedBy)?.name ?? "someone") : null
+  const act = (p: Promise<unknown>) => void p.catch((e: Error) => toast.error(e.message))
   const jumbo = !deleted && message.attachments.length === 0 && isJumboEmoji(message.text)
 
   const react = (emoji: string) => {
@@ -58,6 +96,7 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
         "group relative flex gap-3 px-4 py-0.5 hover:bg-accent/60 focus-within:bg-accent/60 sm:px-5",
         !grouped && "mt-2 pt-1.5",
         mentionsMe && !deleted && "border-l-[3px] border-marigold bg-mention-row pl-[13px] hover:bg-mention-row sm:pl-[17px]",
+        message.pinnedAt && !deleted && !mentionsMe && "bg-marigold/[0.06]",
       )}
     >
       <div className="w-9 shrink-0">
@@ -69,6 +108,10 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
           >
             {formatTime(message.createdAt).replace(/ (AM|PM)$/, "")}
           </time>
+        ) : bot ? (
+          <span className="mt-0.5 grid size-9 place-items-center rounded-md bg-muted text-muted-foreground" aria-hidden="true">
+            <Bot className="size-5" />
+          </span>
         ) : author ? (
           <Avatar name={author.name} color={author.color} className="mt-0.5" />
         ) : (
@@ -77,9 +120,18 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
       </div>
 
       <div className="min-w-0 flex-1">
+        {message.pinnedAt && !deleted && (
+          <p className="flex items-center gap-1 text-xs font-semibold text-muted-foreground">
+            <Pin className="size-3 text-marigold" aria-hidden="true" /> Pinned by {pinner}
+          </p>
+        )}
         {!grouped && (
           <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-bold">{name}</span>
+            <span className="flex items-baseline gap-1 font-bold">
+              {name}
+              {!bot && <StatusEmoji status={author?.customStatus} />}
+            </span>
+            {bot && <WebhookBadge />}
             {message.automated && (
               <span className="rounded bg-muted px-1.5 text-[11px] font-semibold text-muted-foreground" title="This teammate isn’t signed in, so the demo answered for them">
                 Demo auto-reply
@@ -100,6 +152,8 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
 
         {deleted ? (
           <p className="text-muted-foreground italic">This message was deleted.</p>
+        ) : message.reminder ? (
+          <ReminderCard message={message} ctx={ctx} />
         ) : editing ? (
           <InlineEditor
             message={message}
@@ -115,15 +169,22 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
             <div className={cn("message-text", jumbo && "text-4xl leading-tight")}>
               {renderMessageText(message.text, ctx)}
               {message.editedAt && (
-                <span className="ml-1 text-xs text-muted-foreground" title={`Edited ${formatFull(message.editedAt)}`}>
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(true)}
+                  className="ml-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                  title={`Edited ${formatFull(message.editedAt)}. Show earlier versions`}
+                >
                   (edited)
-                </span>
+                </button>
               )}
             </div>
           )
         )}
 
-        {!deleted && message.attachments.length > 0 && <Attachments items={message.attachments} />}
+        {!deleted && !editing && message.linkPreview && <LinkPreviewCard preview={message.linkPreview} />}
+        {!deleted && voice.map((a) => <VoicePlayer key={a.id} attachment={a} className="mt-1.5" />)}
+        {!deleted && files.length > 0 && <Attachments items={files} />}
 
         {!deleted && message.reactions.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
@@ -155,6 +216,30 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
           </div>
         )}
 
+        {message.thread && !props.inThread && (
+          <button
+            type="button"
+            onClick={() => props.onOpenThread?.(message.id)}
+            className="group/thread mt-1 flex items-center gap-2 rounded-md border border-transparent py-1 pr-2 pl-1 text-sm hover:border-border hover:bg-card"
+          >
+            <span className="flex -space-x-1.5">
+              {message.thread.participantIds.slice(0, 4).map((id) => {
+                const p = ctx.users.get(id)
+                return p ? <Avatar key={id} name={p.name} color={p.color} size="xs" className="rounded ring-2 ring-background" /> : null
+              })}
+            </span>
+            <span className="font-semibold text-primary">
+              {message.thread.replyCount} {message.thread.replyCount === 1 ? "reply" : "replies"}
+            </span>
+            {message.thread.lastReplyAt && (
+              <span className="text-xs text-muted-foreground">
+                <span className="group-hover/thread:hidden">Last reply {formatShort(message.thread.lastReplyAt)}</span>
+                <span className="hidden group-hover/thread:inline">View thread</span>
+              </span>
+            )}
+          </button>
+        )}
+
         {seen && <p className="mt-0.5 text-xs text-muted-foreground">Seen</p>}
       </div>
 
@@ -162,7 +247,7 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
         <div
           className={cn(
             "absolute -top-3 right-4 z-10 hidden items-center rounded-md border bg-popover p-0.5 shadow-sm group-hover:flex group-focus-within:flex",
-            pickerOpen && "flex",
+            (pickerOpen || menuOpen) && "flex",
           )}
           role="toolbar"
           aria-label="Message actions"
@@ -194,37 +279,80 @@ export const MessageItem = memo(function MessageItem(props: MessageItemProps) {
               </div>
             </PopoverContent>
           </Popover>
-          <ToolButton label="Reply" onClick={props.onReply}>
-            <CornerUpLeft />
-          </ToolButton>
-          {message.text && (
-            <ToolButton
-              label="Copy text"
-              onClick={() => {
-                void navigator.clipboard?.writeText(fromWire(message.text, ctx.users)).then(() => toast("Copied"))
-              }}
-            >
-              <Copy />
+          {!props.inThread && !message.threadRootId && (
+            <ToolButton label="Reply in thread" onClick={() => props.onOpenThread?.(message.id)}>
+              <MessageSquareText />
             </ToolButton>
           )}
-          {mine && (
-            <>
-              <ToolButton label="Edit" onClick={props.onStartEdit}>
-                <Pencil />
-              </ToolButton>
-              <ToolButton label="Delete" onClick={() => setConfirmDelete(true)}>
-                <Trash2 />
-              </ToolButton>
-            </>
+          <ToolButton label="Quote and reply" onClick={props.onReply}>
+            <CornerUpLeft />
+          </ToolButton>
+          <ToolButton label={props.saved ? "Remove from saved" : "Save for later"} onClick={() => act(saveMessage(qc, message, !props.saved))}>
+            {props.saved ? <BookmarkCheck className="text-primary" /> : <Bookmark />}
+          </ToolButton>
+          {ownText && !message.reminder && (
+            <ToolButton label="Edit" onClick={props.onStartEdit}>
+              <Pencil />
+            </ToolButton>
           )}
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <ToolButton label="More actions">
+                <MoreHorizontal />
+              </ToolButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onSelect={() => act(pinMessage(qc, message, !message.pinnedAt))}>
+                {message.pinnedAt ? <PinOff /> : <Pin />}
+                {message.pinnedAt ? "Unpin" : "Pin to conversation"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRemindOpen(true)}>
+                <AlarmClock /> Remind me about this
+              </DropdownMenuItem>
+              {message.text && (
+                <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(fromWire(message.text, ctx.users)).then(() => toast("Copied"))}>
+                  <Copy /> Copy text
+                </DropdownMenuItem>
+              )}
+              {message.editCount > 0 && (
+                <DropdownMenuItem onSelect={() => setHistoryOpen(true)}>
+                  <Pencil /> Edit history
+                </DropdownMenuItem>
+              )}
+              {canDelete && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={() => setConfirmDelete(true)}>
+                    <Trash2 /> {ownText ? "Delete message" : "Delete for everyone"}
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
+
+      {historyOpen && <EditHistoryDialog message={message} ctx={ctx} open={historyOpen} onOpenChange={setHistoryOpen} />}
+      <WhenDialog
+        open={remindOpen}
+        onOpenChange={setRemindOpen}
+        title="Remind me about this"
+        description="Guff will send you a reminder in your notes, with a link back to this message."
+        confirmLabel="Remind me"
+        onPick={async (at) => {
+          await api.scheduled.remind(message.id, at.toISOString())
+          toast.success(`Reminder set for ${formatFull(at.toISOString())}`)
+        }}
+      />
 
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>Delete this message?</DialogTitle>
-            <DialogDescription>Everyone will see “This message was deleted”. Attached files are removed.</DialogDescription>
+            <DialogDescription>
+              Everyone will see “This message was deleted”. Attached files are removed.
+              {!ownText && " You’re deleting it as a channel admin."}
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
@@ -465,7 +593,10 @@ export function PendingItem({ pending, ctx, grouped, author }: { pending: Pendin
       <div className="min-w-0 flex-1">
         {!grouped && <span className="font-bold">{author?.name}</span>}
         <div className={cn("message-text", !failed && "opacity-60")}>{renderMessageText(pending.text, ctx)}</div>
-        {pending.attachments.length > 0 && <Attachments items={pending.attachments} />}
+        {pending.attachments.filter(isVoice).map((a) => (
+          <VoicePlayer key={a.id} attachment={a} className="mt-1.5 opacity-70" />
+        ))}
+        {pending.attachments.some((a) => !isVoice(a)) && <Attachments items={pending.attachments.filter((a) => !isVoice(a))} />}
         {failed ? (
           <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-destructive" role="alert">
             Not sent. {pending.error}

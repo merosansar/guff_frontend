@@ -1,8 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { ApiError } from "@/lib/api"
+import { ApiError, api } from "@/lib/api"
 import { emitAck, getSocket } from "@/lib/socket"
 import { addPending, pendingStore, removePending, updatePending, type PendingMessage } from "@/lib/stores"
-import type { Attachment, Message } from "@/lib/types"
+import type { Attachment, Message, SavedMessage } from "@/lib/types"
 import { keys, patchChannel, putMessage } from "./data"
 import type { Channel } from "@/lib/types"
 
@@ -21,6 +21,7 @@ async function deliver(qc: QueryClient, pending: PendingMessage) {
       clientId: pending.clientId,
       text: pending.text,
       replyToId: pending.replyToId ?? undefined,
+      threadRootId: pending.threadRootId ?? undefined,
       attachmentIds: pending.attachments.map((a) => a.id),
     })
     putMessage(qc, message)
@@ -39,13 +40,14 @@ async function deliver(qc: QueryClient, pending: PendingMessage) {
 /** Shows the message straight away, then sends it. */
 export function sendMessage(
   qc: QueryClient,
-  input: { channelId: string; text: string; replyToId?: string | null; attachments?: Attachment[] },
+  input: { channelId: string; text: string; replyToId?: string | null; threadRootId?: string | null; attachments?: Attachment[] },
 ) {
   const pending: PendingMessage = {
     clientId: newClientId(),
     channelId: input.channelId,
     text: input.text,
     replyToId: input.replyToId ?? null,
+    threadRootId: input.threadRootId ?? null,
     attachments: input.attachments ?? [],
     createdAt: new Date().toISOString(),
     status: "sending",
@@ -91,4 +93,23 @@ export function markRead(qc: QueryClient, channelId: string, messageId: string) 
   lastSentRead.set(channelId, messageId)
   patchChannel(qc, channelId, (c) => ({ ...c, lastReadId: messageId, unread: 0, mentions: 0 }))
   emitAck("channel:read", { channelId, messageId }).catch(() => lastSentRead.delete(channelId))
+}
+
+// ---- pins, saving, reminders ------------------------------------------------------
+
+export async function pinMessage(qc: QueryClient, message: Message, pinned: boolean) {
+  putMessage(qc, await api.messages.pin(message.id, pinned))
+}
+
+export async function saveMessage(qc: QueryClient, message: Message, saved: boolean) {
+  // Show it straight away; the server's answer (and the event to other tabs) confirms it.
+  qc.setQueryData<SavedMessage[]>(keys.bookmarks, (list) => {
+    const rest = (list ?? []).filter((b) => b.message.id !== message.id)
+    return saved ? [{ savedAt: new Date().toISOString(), message }, ...rest] : rest
+  })
+  try {
+    await api.messages.bookmark(message.id, saved)
+  } finally {
+    void qc.invalidateQueries({ queryKey: keys.bookmarks })
+  }
 }

@@ -1,4 +1,21 @@
-import type { Attachment, Channel, Member, Message, MessagePage, Session, User } from "./types"
+import type {
+  AppConfig,
+  Attachment,
+  Channel,
+  CustomStatus,
+  HistoryEntry,
+  Member,
+  Message,
+  MessagePage,
+  NotifyLevel,
+  SavedMessage,
+  Scheduled,
+  Session,
+  Summary,
+  Thread,
+  User,
+  Webhook,
+} from "./types"
 
 export class ApiError extends Error {
   readonly status: number
@@ -109,7 +126,12 @@ async function request<T>(
 }
 
 /** Uploads with progress (fetch can't report upload progress). */
-export function uploadFile(file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<Attachment> {
+export function uploadFile(
+  file: File,
+  onProgress: (fraction: number) => void,
+  signal?: AbortSignal,
+  voice?: { durationMs: number; waveform: number[] },
+): Promise<Attachment> {
   const attempt = () =>
     new Promise<{ status: number; body: unknown }>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -131,6 +153,12 @@ export function uploadFile(file: File, onProgress: (fraction: number) => void, s
       xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"))
       signal?.addEventListener("abort", () => xhr.abort())
       const form = new FormData()
+      if (voice) {
+        // Text fields first, so the server has them when the file arrives.
+        form.append("voice", "1")
+        form.append("durationMs", String(Math.round(voice.durationMs)))
+        form.append("waveform", JSON.stringify(voice.waveform))
+      }
       form.append("file", file)
       xhr.send(form)
     })
@@ -154,10 +182,20 @@ export const api = {
     register: (body: { name: string; email: string; password: string }) =>
       request<Session>("/auth/register", { method: "POST", body }),
     logout: () => request<void>("/auth/logout", { method: "POST" }),
+    forgot: (email: string) => request<void>("/auth/forgot", { method: "POST", body: { email } }),
+    reset: (token: string, password: string) => request<void>("/auth/reset", { method: "POST", body: { token, password } }),
+    verifyEmail: (token: string) => request<void>("/auth/verify-email", { method: "POST", body: { token } }),
+    sendVerification: () => request<void>("/auth/verify-email/send", { method: "POST" }),
   },
+  config: () => request<AppConfig>("/config"),
   users: {
     list: () => request<User[]>("/users"),
-    updateMe: (body: { name?: string; title?: string }) => request<User>("/users/me", { method: "PATCH", body }),
+    updateMe: (body: {
+      name?: string
+      title?: string
+      customStatus?: (Omit<CustomStatus, "expiresAt"> & { expiresAt: string | null }) | null
+      dndUntil?: string | null
+    }) => request<User>("/users/me", { method: "PATCH", body }),
   },
   channels: {
     list: () => request<Channel[]>("/channels"),
@@ -172,6 +210,37 @@ export const api = {
     addMembers: (id: string, userIds: string[]) => request<Channel>(`/channels/${id}/members`, { method: "POST", body: { userIds } }),
     messages: (id: string, query: { before?: string; after?: string; around?: string; limit?: number }) =>
       request<MessagePage>(`/channels/${id}/messages`, { query }),
+    pins: (id: string) => request<Message[]>(`/channels/${id}/pins`),
+    setRole: (id: string, userId: string, role: "admin" | "member") =>
+      request<void>(`/channels/${id}/members/${userId}/role`, { method: "POST", body: { role } }),
+    removeMember: (id: string, userId: string) => request<void>(`/channels/${id}/members/${userId}`, { method: "DELETE" }),
+    archive: (id: string, archived: boolean) => request<Channel>(`/channels/${id}/archive`, { method: "POST", body: { archived } }),
+    notify: (id: string, level: NotifyLevel) => request<Channel>(`/channels/${id}/notify`, { method: "PUT", body: { level } }),
+    summary: (id: string) => request<Summary>(`/channels/${id}/summary`, { method: "POST" }),
+    webhooks: (id: string) => request<Webhook[]>(`/channels/${id}/webhooks`),
+    createWebhook: (id: string, name: string) =>
+      request<{ webhook: Webhook; url: string }>(`/channels/${id}/webhooks`, { method: "POST", body: { name } }),
+  },
+  webhooks: {
+    remove: (id: string) => request<void>(`/webhooks/${id}`, { method: "DELETE" }),
+  },
+  messages: {
+    pin: (id: string, pinned: boolean) => request<Message>(`/messages/${id}/pin`, { method: "POST", body: { pinned } }),
+    bookmark: (id: string, saved: boolean) => request<{ saved: boolean }>(`/messages/${id}/bookmark`, { method: "PUT", body: { saved } }),
+    history: (id: string) => request<HistoryEntry[]>(`/messages/${id}/history`),
+    thread: (id: string) => request<Thread>(`/messages/${id}/thread`),
+  },
+  bookmarks: () => request<SavedMessage[]>("/bookmarks"),
+  scheduled: {
+    list: () => request<Scheduled[]>("/scheduled"),
+    create: (body: { channelId: string; text: string; sendAt: string; threadRootId?: string }) =>
+      request<Scheduled>("/scheduled", { method: "POST", body }),
+    remind: (messageId: string, remindAt: string) => request<Scheduled>("/reminders", { method: "POST", body: { messageId, remindAt } }),
+    cancel: (id: string) => request<void>(`/scheduled/${id}`, { method: "DELETE" }),
+  },
+  push: {
+    subscribe: (sub: PushSubscriptionJSON) => request<void>("/push/subscribe", { method: "POST", body: sub }),
+    unsubscribe: (endpoint: string) => request<void>("/push/unsubscribe", { method: "POST", body: { endpoint } }),
   },
   dms: {
     open: (userId: string) => request<Channel>("/dms", { method: "POST", body: { userId } }),

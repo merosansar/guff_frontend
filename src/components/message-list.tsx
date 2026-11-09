@@ -4,7 +4,7 @@ import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query"
 import { ArrowDown, Hash, Lock } from "lucide-react"
 import { Avatar, ErrorState, Spinner } from "@/components/common"
 import { markRead } from "@/features/actions"
-import { type MessagesCursor, channelTitle, keys, useChannelNames, useMembers, useUsers } from "@/features/data"
+import { type MessagesCursor, channelTitle, keys, useBookmarks, useChannelNames, useMembers, useUsers } from "@/features/data"
 import { useMe } from "@/features/session"
 import { api } from "@/lib/api"
 import { formatDay, formatFull, sameDay } from "@/lib/format"
@@ -23,6 +23,8 @@ export function MessageList({
   editingId,
   setEditingId,
   onReply,
+  onOpenThread,
+  canManage = false,
 }: {
   channel: Channel
   /** Open around this message (from search or a reply quote). */
@@ -33,6 +35,8 @@ export function MessageList({
   editingId: string | null
   setEditingId: (id: string | null) => void
   onReply: (message: Message) => void
+  onOpenThread: (rootId: string) => void
+  canManage?: boolean
 }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -40,6 +44,7 @@ export function MessageList({
   const { byId } = useUsers()
   const channelNames = useChannelNames()
   const pending = usePending()
+  const { ids: savedIds } = useBookmarks()
   const scroller = useRef<HTMLDivElement>(null)
   const topSentinel = useRef<HTMLDivElement>(null)
   const bottomSentinel = useRef<HTMLDivElement>(null)
@@ -58,7 +63,7 @@ export function MessageList({
   })
 
   const messages = useMemo(() => (query.data ? query.data.pages.toReversed().flatMap((p) => p.messages) : []), [query.data])
-  const mine = pending.filter((p) => p.channelId === channel.id)
+  const mine = pending.filter((p) => p.channelId === channel.id && !p.threadRootId)
   const newestId = messages.at(-1)?.id ?? null
   const caughtUp = !query.hasPreviousPage
 
@@ -209,6 +214,10 @@ export function MessageList({
               prev.kind === "user" &&
               m.kind === "user" &&
               prev.authorId === m.authorId &&
+              !m.webhook &&
+              !prev.webhook &&
+              !prev.thread &&
+              !prev.pinnedAt &&
               !m.replyTo &&
               !prev.deletedAt &&
               new Date(m.createdAt).getTime() - new Date(prev.createdAt).getTime() < GROUP_GAP_MS
@@ -223,6 +232,9 @@ export function MessageList({
                   ctx={ctx}
                   mine={m.authorId === me.id}
                   canInteract={canInteract}
+                  canManage={canManage}
+                  saved={savedIds.has(m.id)}
+                  onOpenThread={onOpenThread}
                   mentionsMe={m.mentions.includes(me.id) && m.authorId !== me.id}
                   seen={m.id === seenId}
                   editing={editingId === m.id}

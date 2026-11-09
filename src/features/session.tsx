@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom"
 import { useQueryClient } from "@tanstack/react-query"
 import { api, onSessionChange, refreshSession, setAccessToken, tokenLifetimeLeft } from "@/lib/api"
 import { closeSocket } from "@/lib/socket"
+import { forgetPushOnSignOut } from "./push"
 import type { Session } from "@/lib/types"
 import { FullPageSpinner } from "@/components/common"
 
@@ -97,6 +98,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       },
       logout: async () => {
         try {
+          await forgetPushOnSignOut()
           await api.auth.logout()
         } finally {
           apply(null)

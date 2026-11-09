@@ -1,21 +1,59 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, Hash, Info, Loader2, Lock, LogOut, Pencil, UserPlus, X } from "lucide-react"
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
+  Bell,
+  BellOff,
+  BellRing,
+  Hash,
+  Info,
+  Loader2,
+  Lock,
+  LogOut,
+  MoreHorizontal,
+  Pencil,
+  Phone,
+  Pin,
+  ShieldCheck,
+  Sparkles,
+  UserMinus,
+  UserPlus,
+  Video,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 import { Avatar, ErrorState, PresenceDot, Spinner, TypingDots } from "@/components/common"
 import { Composer, type ComposerHandle } from "@/components/composer"
 import { AddPeopleDialog, useOpenDm } from "@/components/dialogs"
+import { StatusEmoji, SummaryDialog, WebhooksSection } from "@/components/extras"
+import { ThreadPanel } from "@/components/thread-panel"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { MessageList } from "@/components/message-list"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
-import { type MessagesData, channelTitle, keys, removeChannel, upsertChannel, useChannels, useMembers, useUsers } from "@/features/data"
+import { useCalls } from "@/features/calls"
+import {
+  type MessagesData,
+  channelTitle,
+  keys,
+  removeChannel,
+  upsertChannel,
+  useChannelNames,
+  useChannels,
+  useConfig,
+  useMembers,
+  useUsers,
+} from "@/features/data"
 import { useMe } from "@/features/session"
 import { api } from "@/lib/api"
-import { firstName, formatDay, lastSeen, listNames } from "@/lib/format"
+import { firstName, formatDay, formatShort, lastSeen, listNames } from "@/lib/format"
+import { plainText } from "@/lib/markup"
 import { useTyping } from "@/lib/stores"
-import type { Channel, Message } from "@/lib/types"
+import type { Channel, Message, NotifyLevel, Role } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const LAST_CHANNEL = "guff-last-channel"
@@ -61,7 +99,7 @@ export default function ConversationPage() {
       </div>
     )
   }
-  return <Conversation key={channel.id} channel={channel} anchor={anchor} />
+  return <Conversation key={channel.id} channel={channel} anchor={anchor} threadId={search.get("thread")} />
 }
 
 function MobileBack() {
@@ -80,10 +118,30 @@ function readDetailsOpen() {
   }
 }
 
-function Conversation({ channel, anchor }: { channel: Channel; anchor: string | null }) {
+const isManager = (role: Role | null) => role === "owner" || role === "admin"
+
+function Conversation({ channel, anchor, threadId }: { channel: Channel; anchor: string | null; threadId: string | null }) {
   const qc = useQueryClient()
   const me = useMe()
   const { byId } = useUsers()
+  const config = useConfig()
+  const calls = useCalls()
+  const [, setSearch] = useSearchParams()
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const manager = channel.kind !== "dm" && isManager(channel.role)
+  const canPost = channel.joined && !channel.archivedAt
+  const openThread = (rootId: string) =>
+    setSearch((params) => {
+      const next = new URLSearchParams(params)
+      next.set("thread", rootId)
+      return next
+    })
+  const closeThread = () =>
+    setSearch((params) => {
+      const next = new URLSearchParams(params)
+      next.delete("thread")
+      return next
+    })
   const composer = useRef<ComposerHandle>(null)
   const [replyTo, setReplyTo] = useState<Message | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -177,10 +235,28 @@ function Conversation({ channel, anchor }: { channel: Channel; anchor: string | 
                         ? "Away"
                         : other.title || "Online"
                     : "Only you can see this"
-                  : channel.topic || `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`}
+                  : channel.archivedAt
+                    ? "Archived"
+                    : channel.topic || `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`}
               </span>
             </span>
+            {channel.kind === "dm" && other && other.id !== me.id && <StatusEmoji status={other.customStatus} className="text-base" />}
           </button>
+          {channel.kind === "dm" && other && other.id !== me.id && (
+            <>
+              <Button variant="ghost" size="icon" onClick={() => calls.start(channel, false)} aria-label={`Call ${other.name}`} title="Voice call" className="text-muted-foreground">
+                <Phone className="size-5" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => calls.start(channel, true)} aria-label={`Video call ${other.name}`} title="Video call" className="text-muted-foreground">
+                <Video className="size-5" />
+              </Button>
+            </>
+          )}
+          {config?.ai && (
+            <Button variant="ghost" size="icon" onClick={() => setSummaryOpen(true)} aria-label="Catch me up" title="Catch me up (AI summary)" className="text-muted-foreground">
+              <Sparkles className="size-5" />
+            </Button>
+          )}
           {channel.kind !== "dm" && <MemberStack channel={channel} onClick={toggleDetails} />}
           <Button variant="ghost" size="icon" onClick={toggleDetails} aria-label="Conversation details" aria-pressed={details} className="text-muted-foreground">
             <Info className="size-5" />
@@ -191,7 +267,9 @@ function Conversation({ channel, anchor }: { channel: Channel; anchor: string | 
           channel={channel}
           anchor={anchor}
           dividerAfterId={dividerAfterId}
-          canInteract={channel.joined}
+          canInteract={canPost}
+          canManage={manager}
+          onOpenThread={openThread}
           editingId={editingId}
           setEditingId={setEditingId}
           onReply={(m) => {
@@ -211,7 +289,29 @@ function Conversation({ channel, anchor }: { channel: Channel; anchor: string | 
           )}
         </div>
 
-        {channel.joined ? (
+        {channel.joined && channel.archivedAt ? (
+          <div className="mx-3 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/60 p-4 sm:mx-5">
+            <p className="flex items-center gap-2 text-sm">
+              <Archive className="size-4 text-muted-foreground" aria-hidden="true" />
+              <span>
+                <strong>#{channel.name}</strong> is archived. You can read and search it, but nobody can post.
+              </span>
+            </p>
+            {manager && (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void api.channels
+                    .archive(channel.id, false)
+                    .then((c) => upsertChannel(qc, c))
+                    .catch((e: Error) => toast.error(e.message))
+                }
+              >
+                <ArchiveRestore /> Unarchive
+              </Button>
+            )}
+          </div>
+        ) : channel.joined ? (
           <Composer
             ref={composer}
             channel={channel}
@@ -239,7 +339,13 @@ function Conversation({ channel, anchor }: { channel: Channel; anchor: string | 
         )}
       </section>
 
-      {details && (
+      {threadId && (
+        <aside className="fixed inset-0 z-40 flex flex-col bg-background md:static md:z-auto md:w-[22rem] md:shrink-0 md:border-l lg:w-[26rem]" aria-label="Thread">
+          <ThreadPanel key={threadId} channel={channel} rootId={threadId} canManage={manager} onClose={closeThread} />
+        </aside>
+      )}
+
+      {details && !threadId && (
         <aside className="hidden w-80 shrink-0 flex-col border-l xl:flex" aria-label="Details">
           <div className="flex h-14 items-center justify-between border-b px-4">
             <h2 className="font-bold">Details</h2>
@@ -262,6 +368,7 @@ function Conversation({ channel, anchor }: { channel: Channel; anchor: string | 
           <Details channel={channel} />
         </SheetContent>
       </Sheet>
+      <SummaryDialog channel={channel} title={channel.kind === "dm" ? title : `#${channel.name}`} open={summaryOpen} onOpenChange={setSummaryOpen} />
     </div>
   )
 }
@@ -287,6 +394,84 @@ function MemberStack({ channel, onClick }: { channel: Channel; onClick: () => vo
   )
 }
 
+const NOTIFY_OPTIONS: { value: NotifyLevel; label: string; hint: string; icon: typeof Bell }[] = [
+  { value: "all", label: "Every message", hint: "Notify me about everything", icon: BellRing },
+  { value: "mentions", label: "Mentions and DMs", hint: "The default", icon: Bell },
+  { value: "mute", label: "Mute", hint: "No notifications; mentions still get a badge", icon: BellOff },
+]
+
+function NotifySetting({ channel }: { channel: Channel }) {
+  const qc = useQueryClient()
+  const set = async (level: NotifyLevel) => {
+    try {
+      upsertChannel(qc, await api.channels.notify(channel.id, level))
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+  return (
+    <section className="p-5">
+      <h4 className="mb-2 text-sm font-semibold">Notifications</h4>
+      <div className="grid gap-1" role="radiogroup" aria-label="Notifications for this conversation">
+        {NOTIFY_OPTIONS.filter((o) => channel.kind !== "dm" || o.value !== "mentions").map((o) => {
+          const on = channel.notify === o.value || (channel.kind === "dm" && o.value === "all" && channel.notify === "mentions")
+          return (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => void set(o.value)}
+              className={cn("flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-sm", on ? "border-primary/50 bg-primary/5" : "hover:bg-accent")}
+            >
+              <o.icon className={cn("size-4 shrink-0", on ? "text-primary" : "text-muted-foreground")} aria-hidden="true" />
+              <span className="min-w-0">
+                <span className="block font-semibold">{channel.kind === "dm" && o.value === "all" ? "Every message" : o.label}</span>
+                <span className="block text-xs text-muted-foreground">{o.hint}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function PinnedSection({ channel }: { channel: Channel }) {
+  const navigate = useNavigate()
+  const { byId } = useUsers()
+  const { data, isPending } = useQuery({ queryKey: keys.pins(channel.id), queryFn: () => api.channels.pins(channel.id), staleTime: 60_000 })
+  return (
+    <section className="p-5">
+      <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+        <Pin className="size-4 text-marigold" aria-hidden="true" /> Pinned {data && data.length > 0 && <span className="font-normal text-muted-foreground">({data.length})</span>}
+      </h4>
+      {isPending ? (
+        <Spinner />
+      ) : !data?.length ? (
+        <p className="text-sm text-muted-foreground">Nothing pinned yet. Pin important messages from their ⋯ menu.</p>
+      ) : (
+        <ul className="-mx-2 space-y-0.5">
+          {data.map((m) => (
+            <li key={m.id}>
+              <button
+                type="button"
+                onClick={() => navigate(m.threadRootId ? `/c/${channel.id}?thread=${m.threadRootId}` : `/c/${channel.id}?m=${m.id}`)}
+                className="w-full rounded-md px-2 py-1.5 text-left hover:bg-accent"
+              >
+                <span className="block text-xs text-muted-foreground">
+                  {m.webhook?.name ?? byId.get(m.authorId)?.name ?? "Someone"} · {formatShort(m.createdAt)}
+                </span>
+                <span className="line-clamp-2 block text-sm">{plainText(m.text, byId) || (m.attachments[0] ? `📎 ${m.attachments[0].name}` : "")}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 function Details({ channel }: { channel: Channel }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -294,10 +479,13 @@ function Details({ channel }: { channel: Channel }) {
   const { byId } = useUsers()
   const members = useMembers(channel.id)
   const openDm = useOpenDm()
+  const channelNames = useChannelNames()
   const [adding, setAdding] = useState(false)
   const [editingTopic, setEditingTopic] = useState(false)
   const [topic, setTopic] = useState(channel.topic)
   const [saving, setSaving] = useState(false)
+  const manager = channel.kind !== "dm" && isManager(channel.role)
+  void channelNames
 
   const people = useMemo(
     () =>
@@ -305,8 +493,9 @@ function Details({ channel }: { channel: Channel }) {
         .map((m) => ({ ...m, user: byId.get(m.userId) }))
         .filter((m) => m.user)
         .sort((a, b) => {
+          const roleRank = { owner: 0, admin: 1, member: 2 }
           const rank = { online: 0, away: 1, offline: 2 }
-          return rank[a.user!.status] - rank[b.user!.status] || a.user!.name.localeCompare(b.user!.name)
+          return roleRank[a.role] - roleRank[b.role] || rank[a.user!.status] - rank[b.user!.status] || a.user!.name.localeCompare(b.user!.name)
         }),
     [members.data, byId],
   )
@@ -315,23 +504,33 @@ function Details({ channel }: { channel: Channel }) {
     const other = channel.dmUserId ? byId.get(channel.dmUserId) : undefined
     if (!other) return null
     return (
-      <div className="p-5">
-        <Avatar name={other.name} color={other.color} size="lg" />
-        <h3 className="mt-3 text-lg font-bold">{other.name}</h3>
-        {other.title && <p className="text-muted-foreground">{other.title}</p>}
-        <p className="mt-3 flex items-center gap-2 text-sm">
-          <PresenceDot status={other.status} />
-          {other.status === "online" ? "Online" : other.status === "away" ? "Away" : lastSeen(other.lastSeenAt)}
-          {other.demo && <span className="text-muted-foreground">(demo teammate)</span>}
-        </p>
-        <a href={`mailto:${other.email}`} className="mt-1 block text-sm text-primary hover:underline">
-          {other.email}
-        </a>
-        {other.demo && (
-          <p className="mt-4 rounded-md bg-muted p-3 text-sm text-muted-foreground">
-            {firstName(other.name)} is a demo teammate. While nobody is signed in as them, they answer DMs and @mentions with a short automatic reply.
+      <div className="divide-y">
+        <div className="p-5">
+          <Avatar name={other.name} color={other.color} size="lg" />
+          <h3 className="mt-3 text-lg font-bold">{other.name}</h3>
+          {other.title && <p className="text-muted-foreground">{other.title}</p>}
+          {other.customStatus && (
+            <p className="mt-2 flex items-center gap-1.5 text-sm">
+              <span aria-hidden="true">{other.customStatus.emoji}</span> {other.customStatus.text}
+            </p>
+          )}
+          <p className="mt-3 flex items-center gap-2 text-sm">
+            <PresenceDot status={other.status} />
+            {other.status === "online" ? "Online" : other.status === "away" ? "Away" : lastSeen(other.lastSeenAt)}
+            {other.demo && <span className="text-muted-foreground">(demo teammate)</span>}
           </p>
-        )}
+          {other.dndUntil && <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground"><BellOff className="size-3.5" /> Notifications paused</p>}
+          <a href={`mailto:${other.email}`} className="mt-1 block text-sm text-primary hover:underline">
+            {other.email}
+          </a>
+          {other.demo && (
+            <p className="mt-4 rounded-md bg-muted p-3 text-sm text-muted-foreground">
+              {firstName(other.name)} is a demo teammate. While nobody is signed in as them, they answer DMs and @mentions with a short automatic reply.
+            </p>
+          )}
+        </div>
+        <NotifySetting channel={channel} />
+        <PinnedSection channel={channel} />
       </div>
     )
   }
@@ -359,6 +558,14 @@ function Details({ channel }: { channel: Channel }) {
     }
   }
 
+  const run = (p: Promise<unknown>, done?: string) =>
+    void p.then(() => done && toast(done)).catch((e: Error) => toast.error(e.message))
+
+  const archive = () => {
+    if (!window.confirm(`Archive #${channel.name}? Nobody will be able to post in it, but everything stays readable. You can undo this.`)) return
+    run(api.channels.archive(channel.id, true).then((c) => upsertChannel(qc, c)), `#${channel.name} is archived`)
+  }
+
   const creator = byId.get(channel.createdBy)
 
   return (
@@ -367,11 +574,12 @@ function Details({ channel }: { channel: Channel }) {
         <h3 className="flex items-center gap-1.5 text-lg font-bold">
           {channel.kind === "private" ? <Lock className="size-4" /> : <Hash className="size-4" />}
           {channel.name}
+          {channel.archivedAt && <span className="rounded bg-muted px-1.5 text-xs font-semibold text-muted-foreground">Archived</span>}
         </h3>
         <div className="mt-3">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold">Topic</h4>
-            {channel.joined && !editingTopic && (
+            {channel.joined && !channel.archivedAt && !editingTopic && (
               <Button variant="ghost" size="sm" className="h-7 text-primary" onClick={() => setEditingTopic(true)}>
                 <Pencil /> Edit
               </Button>
@@ -400,12 +608,15 @@ function Details({ channel }: { channel: Channel }) {
         )}
       </section>
 
+      {channel.joined && <NotifySetting channel={channel} />}
+      <PinnedSection channel={channel} />
+
       <section className="p-5">
         <div className="mb-2 flex items-center justify-between">
           <h4 className="text-sm font-semibold">
             {channel.memberCount} {channel.memberCount === 1 ? "member" : "members"}
           </h4>
-          {channel.joined && (
+          {channel.joined && !channel.archivedAt && (
             <Button variant="ghost" size="sm" className="h-7 text-primary" onClick={() => setAdding(true)}>
               <UserPlus /> Add people
             </Button>
@@ -415,35 +626,95 @@ function Details({ channel }: { channel: Channel }) {
           <Spinner />
         ) : (
           <ul className="-mx-2">
-            {people.map(({ user, role }) => (
-              <li key={user!.id}>
-                <button
-                  type="button"
-                  onClick={() => void openDm(user!.id)}
-                  className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
-                  title={`Message ${user!.name}`}
-                >
-                  <Avatar name={user!.name} color={user!.color} size="sm" status={user!.status} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold">
-                      {user!.name}
-                      {user!.id === me.id && <span className="font-normal text-muted-foreground"> (you)</span>}
+            {people.map(({ user, role }) => {
+              const canRemove = manager && user!.id !== me.id && role !== "owner" && (role !== "admin" || channel.role === "owner") && !channel.isDefault
+              const canPromote = channel.role === "owner" && user!.id !== me.id && role !== "owner"
+              return (
+                <li key={user!.id} className="group/member flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => void openDm(user!.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-accent"
+                    title={`Message ${user!.name}`}
+                  >
+                    <Avatar name={user!.name} color={user!.color} size="sm" status={user!.status} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1 truncate text-sm font-semibold">
+                        <span className="truncate">{user!.name}</span>
+                        <StatusEmoji status={user!.customStatus} />
+                        {user!.id === me.id && <span className="font-normal text-muted-foreground"> (you)</span>}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">{user!.title}</span>
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">{user!.title}</span>
-                  </span>
-                  {role === "owner" && <span className="text-xs text-muted-foreground">Owner</span>}
-                </button>
-              </li>
-            ))}
+                    {role !== "member" && (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        {role === "admin" && <ShieldCheck className="size-3.5" aria-hidden="true" />}
+                        {role === "owner" ? "Owner" : "Admin"}
+                      </span>
+                    )}
+                  </button>
+                  {(canRemove || canPromote) && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground" aria-label={`Manage ${user!.name}`}>
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {canPromote && (
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              run(
+                                api.channels.setRole(channel.id, user!.id, role === "admin" ? "member" : "admin").then(() =>
+                                  qc.invalidateQueries({ queryKey: keys.members(channel.id) }),
+                                ),
+                              )
+                            }
+                          >
+                            <ShieldCheck /> {role === "admin" ? "Remove as admin" : "Make admin"}
+                          </DropdownMenuItem>
+                        )}
+                        {canRemove && (
+                          <>
+                            {canPromote && <DropdownMenuSeparator />}
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={() => {
+                                if (!window.confirm(`Remove ${user!.name} from #${channel.name}?`)) return
+                                run(
+                                  api.channels.removeMember(channel.id, user!.id).then(() => qc.invalidateQueries({ queryKey: keys.members(channel.id) })),
+                                  `${user!.name} was removed`,
+                                )
+                              }}
+                            >
+                              <UserMinus /> Remove from channel
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </section>
 
-      {channel.joined && channel.name !== "general" && (
-        <section className="p-5">
-          <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => void leave()}>
-            <LogOut /> Leave #{channel.name}
-          </Button>
+      {manager && <WebhooksSection channel={channel} />}
+
+      {channel.joined && (
+        <section className="grid gap-2 p-5">
+          {manager && !channel.isDefault && !channel.archivedAt && (
+            <Button variant="outline" className="w-full" onClick={archive}>
+              <Archive /> Archive #{channel.name}
+            </Button>
+          )}
+          {channel.name !== "general" && (
+            <Button variant="outline" className="w-full text-destructive hover:text-destructive" onClick={() => void leave()}>
+              <LogOut /> Leave #{channel.name}
+            </Button>
+          )}
         </section>
       )}
       <AddPeopleDialog channel={channel} open={adding} onOpenChange={setAdding} />

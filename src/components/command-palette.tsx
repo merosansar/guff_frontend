@@ -135,7 +135,7 @@ export function CommandPalette() {
                   const author = byId.get(m.authorId)
                   const where = channel ? (channel.kind === "dm" ? channelTitle(channel, byId, me.id) : `#${channel.name}`) : ""
                   return (
-                    <Item key={m.id} value={`message ${m.id}`} onSelect={() => go(`/c/${m.channelId}?m=${m.id}`)}>
+                    <Item key={m.id} value={`message ${m.id}`} onSelect={() => go(m.threadRootId ? `/c/${m.channelId}?thread=${m.threadRootId}` : `/c/${m.channelId}?m=${m.id}`)}>
                       <MessageSquareText className="size-4 shrink-0 self-start mt-0.5" />
                       <span className="min-w-0 flex-1">
                         <span className="flex items-baseline gap-2 text-xs text-muted-foreground">

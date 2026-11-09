@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { CornerUpLeft, Loader2, Paperclip, SendHorizontal, X } from "lucide-react"
+import { Clock, CornerUpLeft, Loader2, Paperclip, SendHorizontal, X } from "lucide-react"
+import { toast } from "sonner"
+import { ScheduledDialog, WhenDialog } from "@/components/extras"
 import { Avatar } from "@/components/common"
 import { sendMessage } from "@/features/actions"
-import { useUsers } from "@/features/data"
+import { keys, useScheduled, useUsers } from "@/features/data"
 import { useMe } from "@/features/session"
-import { uploadFile } from "@/lib/api"
+import { api, uploadFile } from "@/lib/api"
+import { formatFull } from "@/lib/format"
 import { formatBytes } from "@/lib/format"
 import { plainText } from "@/lib/markup"
 import { emitTyping } from "@/lib/socket"
@@ -13,6 +16,7 @@ import type { Attachment, Channel, Message } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Attachments } from "./message-item"
 import { mentionQuery, toWire } from "./mentions"
+import { type Recording, VoiceRecorder, voiceSupported } from "./voice"
 
 interface Upload {
   localId: string
@@ -48,13 +52,21 @@ export const Composer = forwardRef<
     onCancelReply: () => void
     onEditLast: () => void
     maxUploadMb?: number
+    /** Write into the thread under this message. */
+    threadRootId?: string | null
   }
->(function Composer({ channel, placeholder, replyTo, onCancelReply, onEditLast }, ref) {
+>(function Composer({ channel, placeholder, replyTo, onCancelReply, onEditLast, threadRootId = null }, ref) {
   const qc = useQueryClient()
   const me = useMe()
   const { users, byId } = useUsers()
-  const [text, setText] = useState(() => drafts.get(channel.id)?.text ?? "")
-  const mentions = useRef<Map<string, string>>(drafts.get(channel.id)?.mentions ?? new Map())
+  const draftKey = threadRootId ? `${channel.id}:${threadRootId}` : channel.id
+  const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? "")
+  const mentions = useRef<Map<string, string>>(drafts.get(draftKey)?.mentions ?? new Map())
+  const [recording, setRecording] = useState(false)
+  const [scheduling, setScheduling] = useState(false)
+  const [showScheduled, setShowScheduled] = useState(false)
+  const scheduled = useScheduled()
+  const scheduledHere = (scheduled.data ?? []).filter((s) => s.kind === "message" && s.channelId === channel.id && s.status === "pending").length
   const [uploads, setUploads] = useState<Upload[]>([])
   const [suggest, setSuggest] = useState<{ start: number; query: string; index: number } | null>(null)
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -71,8 +83,8 @@ export const Composer = forwardRef<
     }
   }, [channel.id])
   useEffect(() => {
-    drafts.set(channel.id, { text, mentions: mentions.current })
-  }, [channel.id, text])
+    drafts.set(draftKey, { text, mentions: mentions.current })
+  }, [draftKey, text])
 
   useEffect(() => {
     const el = textarea.current
@@ -160,17 +172,43 @@ export const Composer = forwardRef<
       channelId: channel.id,
       text: toWire(text.trim(), mentions.current),
       replyToId: replyTo?.id ?? null,
+      threadRootId,
       attachments: ready,
     })
+    clearDraft()
+  }
+
+  const clearDraft = () => {
     setText("")
     mentions.current = new Map()
-    drafts.delete(channel.id)
+    drafts.delete(draftKey)
     setUploads([])
     setSuggest(null)
     onCancelReply()
     clearTimeout(stopTyping.current)
     emitTyping(channel.id, false)
     lastTypingSent.current = 0
+  }
+
+  /** Voice messages go out as soon as you stop recording. */
+  const sendVoice = (r: Recording) => {
+    const id = toast.loading("Sending voice message…")
+    uploadFile(r.file, () => {}, undefined, { durationMs: r.durationMs, waveform: r.waveform })
+      .then((attachment) => {
+        toast.dismiss(id)
+        sendMessage(qc, { channelId: channel.id, text: "", threadRootId, replyToId: replyTo?.id ?? null, attachments: [attachment] })
+        onCancelReply()
+      })
+      .catch((e: Error) => toast.error(e.message, { id }))
+  }
+
+  const schedule = async (at: Date) => {
+    if (uploads.length > 0) throw new Error("Scheduled messages can’t have attachments yet. Send the files now, or remove them.")
+    const body = toWire(text.trim(), mentions.current)
+    await api.scheduled.create({ channelId: channel.id, text: body, sendAt: at.toISOString(), threadRootId: threadRootId ?? undefined })
+    void qc.invalidateQueries({ queryKey: keys.scheduled })
+    clearDraft()
+    toast.success(`Scheduled for ${formatFull(at.toISOString())}`)
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -196,7 +234,7 @@ export const Composer = forwardRef<
       onCancelReply()
       return
     }
-    if (e.key === "ArrowUp" && !text) {
+    if (e.key === "ArrowUp" && !text && !threadRootId) {
       e.preventDefault()
       onEditLast()
       return
@@ -289,57 +327,94 @@ export const Composer = forwardRef<
         )}
 
         <div className="flex items-end gap-1 p-1.5">
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Attach files"
-            title="Attach files"
-          >
-            <Paperclip className="size-[18px]" />
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              addFiles([...(e.target.files ?? [])])
-              e.target.value = ""
-            }}
-          />
-          <textarea
-            ref={textarea}
-            value={text}
-            onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
-            onKeyDown={onKeyDown}
-            onBlur={() => setTimeout(() => setSuggest(null), 100)}
-            onPaste={(e) => {
-              const files = [...e.clipboardData.files]
-              if (files.length) {
-                e.preventDefault()
-                addFiles(files)
-              }
-            }}
-            rows={1}
-            placeholder={placeholder}
-            aria-label={placeholder}
-            className="max-h-[220px] min-h-9 flex-1 resize-none bg-transparent px-1.5 py-[7px] leading-[22px] outline-none placeholder:text-muted-foreground"
-          />
-          <button
-            type="button"
-            onClick={send}
-            disabled={!canSend}
-            className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground transition-opacity hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground"
-            aria-label="Send message"
-            title="Send (Enter)"
-          >
-            <SendHorizontal className="size-[18px]" />
-          </button>
+          {!recording && (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                aria-label="Attach files"
+                title="Attach files"
+              >
+                <Paperclip className="size-[18px]" />
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  addFiles([...(e.target.files ?? [])])
+                  e.target.value = ""
+                }}
+              />
+              <textarea
+                ref={textarea}
+                value={text}
+                onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
+                onKeyDown={onKeyDown}
+                onBlur={() => setTimeout(() => setSuggest(null), 100)}
+                onPaste={(e) => {
+                  const files = [...e.clipboardData.files]
+                  if (files.length) {
+                    e.preventDefault()
+                    addFiles(files)
+                  }
+                }}
+                rows={1}
+                placeholder={placeholder}
+                aria-label={placeholder}
+                className="max-h-[220px] min-h-9 flex-1 resize-none bg-transparent px-1.5 py-[7px] leading-[22px] outline-none placeholder:text-muted-foreground"
+              />
+            </>
+          )}
+          {/* One recorder, always in the same place, so it keeps recording while the row changes. */}
+          {voiceSupported() && (recording || (!text.trim() && uploads.length === 0)) && (
+            <VoiceRecorder onRecorded={sendVoice} onActiveChange={setRecording} />
+          )}
+          {!recording && text.trim() && uploads.length === 0 && (
+            <button
+              type="button"
+              onClick={() => setScheduling(true)}
+              className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Schedule message"
+              title="Send later"
+            >
+              <Clock className="size-[18px]" />
+            </button>
+          )}
+          {!recording && (
+            <button
+              type="button"
+              onClick={send}
+              disabled={!canSend}
+              className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground transition-opacity hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground"
+              aria-label="Send message"
+              title="Send (Enter)"
+            >
+              <SendHorizontal className="size-[18px]" />
+            </button>
+          )}
         </div>
       </div>
-      <p className="mt-1 hidden px-1 text-xs text-muted-foreground sm:block">
-        <strong>**bold**</strong>, <em>_italic_</em>, <code className="font-mono">`code`</code>, @ to mention. Shift + Enter for a new line.
+      <WhenDialog
+        open={scheduling}
+        onOpenChange={setScheduling}
+        title="Send later"
+        description="Pick when this message should go out. You can cancel it any time before then."
+        confirmLabel="Schedule"
+        onPick={schedule}
+      />
+      <ScheduledDialog open={showScheduled} onOpenChange={setShowScheduled} />
+      <p className="mt-1 hidden items-center gap-3 px-1 text-xs text-muted-foreground sm:flex">
+        <span className="min-w-0 flex-1 truncate">
+          <strong>**bold**</strong>, <em>_italic_</em>, <code className="font-mono">`code`</code>, @ to mention. Shift + Enter for a new line.
+        </span>
+        {scheduledHere > 0 && !threadRootId && (
+          <button type="button" onClick={() => setShowScheduled(true)} className="flex shrink-0 items-center gap-1 font-semibold text-primary hover:underline">
+            <Clock className="size-3.5" /> {scheduledHere} scheduled
+          </button>
+        )}
       </p>
     </div>
   )

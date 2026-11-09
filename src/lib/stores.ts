@@ -56,6 +56,8 @@ export interface PendingMessage {
   channelId: string
   text: string
   replyToId: string | null
+  /** Set when the message is a reply in a thread. */
+  threadRootId: string | null
   attachments: Attachment[]
   createdAt: string
   status: "sending" | "failed"

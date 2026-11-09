@@ -172,7 +172,9 @@ export function PeoplePage() {
                   {u.name}
                   {u.id === me.id && <span className="font-normal text-muted-foreground"> (you)</span>}
                 </p>
-                <p className="truncate text-sm text-muted-foreground">{u.title || u.email}</p>
+                <p className="truncate text-sm text-muted-foreground">
+                  {u.customStatus ? `${u.customStatus.emoji} ${u.customStatus.text}`.trim() : u.title || u.email}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   {u.status === "online" ? "Online" : u.status === "away" ? "Away" : lastSeen(u.lastSeenAt)}
                   {u.demo && ", demo teammate"}

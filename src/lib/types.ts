@@ -12,6 +12,16 @@ export interface User {
   lastSeenAt: string | null
   status: PresenceStatus
   demo: boolean
+  customStatus: CustomStatus | null
+  /** Do not disturb until this time. */
+  dndUntil: string | null
+  emailVerified: boolean
+}
+
+export interface CustomStatus {
+  emoji: string
+  text: string
+  expiresAt: string | null
 }
 
 export interface Session {
@@ -28,6 +38,17 @@ export interface Attachment {
   width: number | null
   height: number | null
   url: string
+  /** Voice messages: length and a loudness outline (0 to 100). */
+  durationMs: number | null
+  waveform: number[] | null
+}
+
+export interface LinkPreview {
+  url: string
+  title: string
+  description: string
+  image: string | null
+  siteName: string
 }
 
 export interface Message {
@@ -45,7 +66,23 @@ export interface Message {
   createdAt: string
   editedAt: string | null
   deletedAt: string | null
+  editCount: number
+  pinnedAt: string | null
+  pinnedBy: string | null
+  /** Set on a reply inside a thread. */
+  threadRootId: string | null
+  /** Set on a message that has replies in a thread. */
+  thread: { replyCount: number; lastReplyAt: string | null; participantIds: string[] } | null
+  linkPreview: LinkPreview | null
+  /** Posted by an integration (incoming webhook). */
+  webhook: { id: string; name: string } | null
+  /** A reminder you set, delivered to your notes. */
+  reminder: boolean
+  ref: { channelId: string; messageId: string; authorId: string; excerpt: string } | null
 }
+
+export type Role = "owner" | "admin" | "member"
+export type NotifyLevel = "all" | "mentions" | "mute"
 
 export interface Channel {
   id: string
@@ -58,8 +95,10 @@ export interface Channel {
   createdAt: string
   lastMessageAt: string | null
   dmUserId: string | null
+  archivedAt: string | null
   joined: boolean
-  role: "owner" | "member" | null
+  role: Role | null
+  notify: NotifyLevel
   lastReadId: string | null
   unread: number
   mentions: number
@@ -73,9 +112,68 @@ export interface MessagePage {
 
 export interface Member {
   userId: string
-  role: "owner" | "member"
+  role: Role
   joinedAt: string
   lastReadId: string | null
+}
+
+export interface Thread {
+  root: Message
+  replies: Message[]
+}
+
+export interface SavedMessage {
+  savedAt: string
+  message: Message
+}
+
+export interface Scheduled {
+  id: string
+  kind: "message" | "reminder"
+  channelId: string
+  text: string
+  threadRootId: string | null
+  messageId: string | null
+  sendAt: string
+  status: "pending" | "sending" | "sent" | "failed"
+  error: string | null
+}
+
+export interface Webhook {
+  id: string
+  channelId: string
+  name: string
+  createdBy: string
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+export interface HistoryEntry {
+  text: string
+  writtenAt: string
+  current: boolean
+}
+
+export interface Summary {
+  summary: string
+  scope: "unread" | "recent"
+  messageCount: number
+}
+
+/** What this server can do (features that depend on keys being set). */
+export interface AppConfig {
+  ai: boolean
+  pushKey: string | null
+  iceServers: RTCIceServer[]
+  maxUploadMb: number
+}
+
+export interface CallInvite {
+  callId: string
+  channelId: string
+  fromUserId: string
+  fromSocketId: string
+  video: boolean
 }
 
 export type Ack<T = unknown> = { ok: true; data: T } | { ok: false; error: { status: number; message: string } }

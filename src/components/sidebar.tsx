@@ -1,8 +1,29 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, NavLink } from "react-router-dom"
-import { Bell, BellOff, Check, Compass, Hash, Lock, LogOut, Monitor, Moon, Plus, Search, Sun, UserRound, Users } from "lucide-react"
+import {
+  Archive,
+  Bell,
+  BellOff,
+  BellRing,
+  Bookmark,
+  Check,
+  Clock,
+  Compass,
+  Hash,
+  Lock,
+  LogOut,
+  Monitor,
+  Moon,
+  Plus,
+  Search,
+  Smile,
+  Sun,
+  UserRound,
+  Users,
+} from "lucide-react"
 import { toast } from "sonner"
 import { Avatar, TypingDots } from "@/components/common"
+import { DND_OPTIONS, ScheduledDialog, StatusDialog, StatusEmoji, usePauseNotifications } from "@/components/extras"
 import { Wordmark } from "@/components/logo"
 import { useTheme, type Theme } from "@/components/theme-provider"
 import {
@@ -14,8 +35,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { channelTitle, useChannels, useUsers } from "@/features/data"
+import { channelTitle, useChannels, useConfig, useUsers } from "@/features/data"
 import { disableNotifications, enableNotifications, notificationsSupported, notificationsWanted } from "@/features/notify"
+import { disablePush, enablePush, pushSupported } from "@/features/push"
 import { useMe, useSession } from "@/features/session"
 import { useAllTyping } from "@/lib/stores"
 import type { Channel } from "@/lib/types"
@@ -35,7 +57,10 @@ export function Sidebar({ className }: { className?: string }) {
   const [messaging, setMessaging] = useState(false)
 
   const { rooms, dms } = useMemo(() => {
-    const rooms = channels.filter((c) => c.kind !== "dm").sort((a, b) => a.name.localeCompare(b.name))
+    // Archived channels sink to the bottom.
+    const rooms = channels
+      .filter((c) => c.kind !== "dm")
+      .sort((a, b) => Number(!!a.archivedAt) - Number(!!b.archivedAt) || a.name.localeCompare(b.name))
     const dms = channels
       .filter((c) => c.kind === "dm")
       .sort((a, b) => (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt))
@@ -80,6 +105,9 @@ export function Sidebar({ className }: { className?: string }) {
         <SideLink to="/people" icon={Users}>
           People
         </SideLink>
+        <SideLink to="/saved" icon={Bookmark}>
+          Saved for later
+        </SideLink>
       </div>
 
       <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-3 [scrollbar-color:var(--sidebar-active)_transparent]">
@@ -110,12 +138,15 @@ export function Sidebar({ className }: { className?: string }) {
         >
           {rooms.map((c) => (
             <ConversationLink key={c.id} channel={c} typing={typingIn(c).length > 0}>
-              {c.kind === "private" ? (
+              {c.archivedAt ? (
+                <Archive className="size-3.5 shrink-0 opacity-70" aria-label="Archived" />
+              ) : c.kind === "private" ? (
                 <Lock className="size-3.5 shrink-0 opacity-70" aria-label="Private" />
               ) : (
                 <Hash className="size-3.5 shrink-0 opacity-70" aria-hidden="true" />
               )}
               <span className="truncate">{c.name}</span>
+              {c.notify === "mute" && <BellOff className="size-3 shrink-0 opacity-60" aria-label="Muted" />}
             </ConversationLink>
           ))}
         </Section>
@@ -141,6 +172,8 @@ export function Sidebar({ className }: { className?: string }) {
                   <UserRound className="size-4" aria-hidden="true" />
                 )}
                 <span className="truncate">{channelTitle(c, byId, me.id)}</span>
+                {other && other.id !== me.id && <StatusEmoji status={other.customStatus} />}
+                {c.notify === "mute" && <BellOff className="size-3 shrink-0 opacity-60" aria-label="Muted" />}
               </ConversationLink>
             )
           })}
@@ -218,9 +251,10 @@ function ConversationLink({
   status?: "online" | "away" | "offline"
   children: React.ReactNode
 }) {
-  const unread = channel.unread > 0
+  // Muted conversations don't shout: no bold, only a mention badge.
+  const unread = channel.unread > 0 && channel.notify !== "mute"
   // In channels, only mentions earn a badge; every unread DM is for you, so it shows the count.
-  const badge = dm ? channel.unread : channel.mentions
+  const badge = dm && channel.notify !== "mute" ? channel.unread : channel.mentions
   const label = [
     status,
     unread && `${channel.unread >= 100 ? "99+" : channel.unread} unread`,
@@ -265,21 +299,29 @@ function MeMenu() {
   const { byId } = useUsers()
   const { logout } = useSession()
   const { theme, setTheme } = useTheme()
+  const config = useConfig()
   const [profileOpen, setProfileOpen] = useState(false)
+  const [statusOpen, setStatusOpen] = useState(false)
+  const [scheduledOpen, setScheduledOpen] = useState(false)
   const [notifyOn, setNotifyOn] = useState(notificationsWanted)
+  const pause = usePauseNotifications()
   const self = byId.get(me.id)
+  const dnd = !!self?.dndUntil && new Date(self.dndUntil).getTime() > Date.now()
 
   const toggleNotifications = async () => {
     if (notifyOn) {
       disableNotifications()
+      await disablePush().catch(() => {})
       setNotifyOn(false)
-      toast("Desktop notifications are off")
+      toast("Notifications are off")
       return
     }
     const on = await enableNotifications()
     setNotifyOn(on)
-    if (on) toast.success("You’ll be notified about DMs and mentions while Guff is in the background")
-    else toast.error("Notifications are blocked in this browser. Allow them in the site settings first.")
+    if (!on) return void toast.error("Notifications are blocked in this browser. Allow them in the site settings first.")
+    // Push reaches you even when no Guff tab is open.
+    const push = config?.pushKey && pushSupported() ? await enablePush(config.pushKey).catch(() => false) : false
+    toast.success(push ? "You’ll be notified about DMs and mentions, even when Guff is closed" : "You’ll be notified about DMs and mentions while Guff is in the background")
   }
 
   return (
@@ -293,9 +335,15 @@ function MeMenu() {
           >
             <Avatar name={me.name} color={me.color} size="sm" status={self?.status ?? "online"} ringClass="ring-sidebar" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-white">{me.name}</span>
-              <span className="block truncate text-xs text-sidebar-muted">{me.title || me.email}</span>
+              <span className="flex items-center gap-1 truncate text-sm font-semibold text-white">
+                <span className="truncate">{me.name}</span>
+                <StatusEmoji status={self?.customStatus} />
+              </span>
+              <span className="block truncate text-xs text-sidebar-muted">
+                {dnd ? "Notifications paused" : self?.customStatus?.text || me.title || me.email}
+              </span>
             </span>
+            {dnd && <BellOff className="size-4 shrink-0 text-sidebar-muted" aria-label="Notifications paused" />}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="start" className="w-60">
@@ -304,14 +352,35 @@ function MeMenu() {
             <span className="block text-xs text-muted-foreground">{me.email}</span>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => setStatusOpen(true)}>
+            <Smile /> {self?.customStatus ? "Change status" : "Set a status"}
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setProfileOpen(true)}>
             <UserRound /> Edit profile
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setScheduledOpen(true)}>
+            <Clock /> Scheduled messages and reminders
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           {notificationsSupported() && (
             <DropdownMenuItem onSelect={() => void toggleNotifications()}>
               {notifyOn ? <BellOff /> : <Bell />}
-              {notifyOn ? "Turn off desktop notifications" : "Turn on desktop notifications"}
+              {notifyOn ? "Turn off notifications" : "Turn on notifications"}
             </DropdownMenuItem>
+          )}
+          {dnd ? (
+            <DropdownMenuItem onSelect={() => void pause(null)}>
+              <BellRing /> Resume notifications
+            </DropdownMenuItem>
+          ) : (
+            <>
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Pause notifications</DropdownMenuLabel>
+              {DND_OPTIONS.map((o) => (
+                <DropdownMenuItem key={o.label} onSelect={() => void pause(o.until())}>
+                  <BellOff /> {o.label}
+                </DropdownMenuItem>
+              ))}
+            </>
           )}
           <DropdownMenuSeparator />
           <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Theme</DropdownMenuLabel>
@@ -328,6 +397,8 @@ function MeMenu() {
         </DropdownMenuContent>
       </DropdownMenu>
       <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} />
+      <StatusDialog open={statusOpen} onOpenChange={setStatusOpen} />
+      <ScheduledDialog open={scheduledOpen} onOpenChange={setScheduledOpen} />
     </div>
   )
 }
